@@ -1,0 +1,9 @@
+﻿.piolibdeps/**
+.pioenvs/**
+.pioenvs
+.piolibdeps
+.cproject
+.project
+.settings
+.travis.yml
+
