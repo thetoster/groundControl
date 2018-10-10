@@ -40,10 +40,17 @@
 #include <BridgeServer.h>
 #include <BridgeClient.h>
 #include <Console.h>
+#include <sha256.h>
+#include <FileIO.h>
 
 RelayCtrl relayCtrl;
 FluidLevel fluidLevel;
 BridgeServer server;
+
+uint8_t* key = nullptr;
+int keyLen = 0;
+
+void loadKey();
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -54,23 +61,88 @@ void setup() {
   server.begin();
   Console.begin();
   digitalWrite(LED_BUILTIN, LOW);
+  loadKey();
+}
+
+void loadKey() {
+  //to generate key, type in openwrt console
+  //head -c 32 </dev/urandom >/etc/config/httpKey
+  //
+  //to dump in hex form:
+  //hexdump /etc/config/httpKey
+  FileSystem.begin();
+  File keyFile = FileSystem.open("/etc/config/httpKey", FILE_READ);
+  keyLen = keyFile.size();
+  key = static_cast<uint8_t*>(malloc(keyLen));
+  keyFile.read(key, keyLen);
+  keyFile.close();
+}
+
+String findArg(String rawData, String argName) {
+  argName.concat("=");
+  int index = rawData.indexOf(argName);
+  if (index < 0) {
+    return "";
+  }
+  index += argName.length();
+  int index2 = rawData.indexOf('&', index);
+  index2 = index2 < 0 ? rawData.length() : index2;
+  return rawData.substring(index, index2);
+}
+
+String extractCommand(String rawData) {
+  rawData.trim();
+  String remoteHMac = findArg(rawData, F("HMac"));
+  String nonce = findArg(rawData, F("nonce"));
+  String cmd = findArg(rawData, F("cmd"));
+  Sha256.initHmac(key, keyLen);
+  Sha256.print(nonce);
+  Sha256.print("cmd");
+  Sha256.print(cmd);
+  Sha256.print(nonce);
+
+  String hmac;
+  hmac.reserve(64);
+  uint8_t* hash = Sha256.resultHmac();
+  for (int t = 0; t < 32; t++) {
+    hmac.concat( (char)(65 + (hash[t]>>4)));
+    hmac.concat( (char)(65 + (hash[t]&0xF)));
+  }
+//--------- Just for debug
+  Console.print("cmd:");
+  Console.println(cmd);
+  Console.print("key:");
+  for (int i = 0; i < keyLen; i++) {
+    const byte nib1 = (key[i] >> 4) & 0x0F;
+    const byte nib2 = (key[i] >> 0) & 0x0F;
+    Console.print((char)(nib1 < 0xA ? '0' + nib1 : 'A' + nib1 - 0xA));
+    Console.print((char)(nib2 < 0xA ? '0' + nib2 : 'A' + nib2 - 0xA));
+  }
+  Console.print(" [LEN=");
+  Console.print(keyLen);
+  Console.println(']');
+  Console.print("nonce:");
+  Console.println(nonce);
+  Console.print("    my hmac:");
+  Console.println(hmac);
+  Console.print("remote hmac:");
+  Console.println(remoteHMac);
+//-----------^^
+  return hmac.compareTo(remoteHMac) == 0 ? cmd : "";
 }
 
 void process(BridgeClient& client) {
-  String cmd = client.readString();
-  cmd.trim();
-  Console.println(cmd);
-  Console.flush();
-  if (cmd == "level") {
+  String cmd = extractCommand(client.readString());
+  if (cmd == F("level")) {
     client.println(fluidLevel.getStatus());
 
-  } else if (cmd == "gate") {
+  } else if (cmd == F("gate")) {
     relayCtrl.switchOn(1);
-    client.println("200: OK");
+    client.println(F("200: OK"));
 
-  } else if (cmd == "door") {
+  } else if (cmd == F("door")) {
     relayCtrl.switchOn(0);
-    client.println("200: OK");
+    client.println(F("200: OK"));
   }
 }
 
